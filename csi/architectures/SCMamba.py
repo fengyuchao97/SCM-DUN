@@ -15,14 +15,11 @@ from box import Box
 from fvcore.nn import FlopCountAnalysis
 
 from csi.data import shift_batch, shift_back_batch, gen_meas_torch_batch
-# import swattention
 from timm.models.layers import DropPath, trunc_normal_, drop_path
-from mamba_ssm import Mamba, Mamba_rope, Mamba2
+from mamba_ssm import Mamba, Mamba_rope
 import numpy as np
 import pandas as pd
 from einops import repeat
-from csi.Hilbert.Hilbert3d import Hilbert3d
-from csi.architectures.MambaNO.CNOModule import LiftProjectBlock
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
     def norm_cdf(x):
@@ -42,16 +39,10 @@ def _no_grad_trunc_normal_(tensor, mean, std, a, b):
         tensor.clamp_(min=a, max=b)
         return tensor
 
-
 def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
-    # type: (Tensor, float, float, float, float) -> Tensor
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
 
-
 class LocalMSA(nn.Module):
-    """
-    The Local MSA partitions the input into non-overlapping windows of size M × M, treating each pixel within the window as a token, and computes self-attention within the window.
-    """
     def __init__(self, 
                  dim, 
                  num_heads, 
@@ -101,9 +92,6 @@ class LocalMSA(nn.Module):
         return out
     
 class NonLocalMSA(nn.Module):
-    """
-    The Non-Local MSA divides the input into N × N non-overlapping windows, treating each window as a token, and computes self-attention across the windows.
-    """
     def __init__(self, 
                  dim, 
                  num_heads, 
@@ -158,13 +146,11 @@ class NonLocalMSA(nn.Module):
         out = self.project_out(out)
         
         
-        return out
-    
+        return out  
 
 class GELU(nn.Module):
     def forward(self, x):
         return F.gelu(x)
-
 
 class FeedForward(nn.Module):
     def __init__(self, dim, mult=4):
@@ -185,7 +171,6 @@ class FeedForward(nn.Module):
         out = self.net(x)
         return out
     
-
 ## Gated-Dconv Feed-Forward Network (GDFN)
 class Gated_Dconv_FeedForward(nn.Module):
     def __init__(self, 
@@ -215,7 +200,6 @@ class Gated_Dconv_FeedForward(nn.Module):
         x = self.project_out(x)
         return x
     
-
 def FFN_FN(
     cfg,
     ffn_name,
@@ -519,173 +503,6 @@ class MambaLayer(nn.Module):
             out = self.forward_patch_token(x, r=r)
 
         return out
-
-class MambaLayer_hilbert(nn.Module):
-    def __init__(self, dim, dim_m, d_state = 16, d_conv = 4, expand = 2, drop_path=0., channel_token = False, mode_temp=3):
-        super().__init__()
-        print(f"Transformer: dim: {dim}")
-        print(f"Mamba: dim: {dim_m}")
-        self.dim = dim
-        self.norm = nn.LayerNorm(64)
-        self.mamba = Mamba(
-                d_model=64, # Model dimension d_model
-                d_state=d_state,  # SSM state expansion factor
-                d_conv=d_conv,    # Local convolution width
-                expand=expand,    # Block expansion factor
-                # bimamba= True,
-        )
-        self.channel_token = channel_token ## whether to use channel as tokens
-        self.mode_temp = mode_temp
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward_patch_token(self, x, hilbert_curve1=None, r=False):
-        x_perm = x  # x_perm 的形状为 (B, C, H, W)
-        hilbert_curve = hilbert_curve1
-
-        B, C, H, W = x_perm.shape
-        channel_division = 4  # 通道划分数
-        num_partitions = 4    # 分块数
-
-        assert H % num_partitions == 0 and W % num_partitions == 0, "H and W must be divisible by num_partitions"
-        assert C % channel_division == 0, "C must be divisible by channel_division"
-
-        # 分割 C 维度
-        x_C_splits = torch.split(x_perm, C // channel_division, dim=1)  # 列表，元素形状为 (B, C//channel_division, H, W)
-
-        # 分割 H 和 W 维度
-        x_patches = []
-        for x_c in x_C_splits:
-            x_H_splits = torch.split(x_c, H // num_partitions, dim=2)
-            for x_h in x_H_splits:
-                x_W_splits = torch.split(x_h, W // num_partitions, dim=3)
-                for x_w in x_W_splits:
-                    x_patches.append(x_w)  # 每个 x_w 的形状为 (B, C//channel_division, H//num_partitions, W//num_partitions)
-
-        # 将分块后的张量堆叠在新的维度上
-        x_patches = torch.stack(x_patches, dim=1)  # 形状：(B, T, d_model, h, w)
-        T = x_patches.shape[1]  # T = channel_division * num_partitions * num_partitions
-
-        B, T, d_model, h, w = x_patches.shape
-        n_tokens_per_patch = h * w
-        n_tokens = d_model * n_tokens_per_patch  # n_tokens = d_model * n_tokens_per_patch
-
-        # 展平并调整维度
-        x_patches_flat = x_patches.view(B, T, d_model, n_tokens_per_patch)  # 形状：(B, T, d_model, n_tokens_per_patch)
-        x_patches_flat = x_patches_flat.permute(0, 3, 2, 1).contiguous()    # 形状：(B, n_tokens_per_patch, d_model, T)
-        x_hil = x_patches_flat.view(B, n_tokens, T)                         # 形状：(B, n_tokens, T)
-
-        # 应用 Hilbert 曲线索引（如果需要）
-        if hilbert_curve is not None:
-            x_hil = x_hil.index_select(dim=1, index=hilbert_curve)
-        else:
-            x_hil = x_hil
-
-        # 通过 Mamba 模块处理
-        x_mamba = x_hil + self.drop_path(self.mamba(self.norm(x_hil)))  # x_mamba 形状：(B, n_tokens, T)
-
-        # 反向 Hilbert 曲线索引
-        if hilbert_curve is not None:
-            sum_out = torch.zeros_like(x_mamba)
-            hilbert_curve_re = hilbert_curve.unsqueeze(0).unsqueeze(-1).expand(B, -1, T)
-            sum_out.scatter_add_(dim=1, index=hilbert_curve_re, src=x_mamba)
-        else:
-            sum_out = x_mamba
-
-        # 恢复到分块形状
-        x_patches_reconstructed = sum_out.view(B, n_tokens_per_patch, d_model, T)
-        x_patches_reconstructed = x_patches_reconstructed.permute(0, 3, 2, 1).contiguous()  # 形状：(B, T, d_model, n_tokens_per_patch)
-        x_patches_reconstructed = x_patches_reconstructed.view(B, T, d_model, h, w)         # 形状：(B, T, d_model, h, w)
-
-        # 重建原始张量
-        idx = 0
-        x_reconstructed_C_splits = []
-        for c in range(channel_division):
-            c_patches = []
-            for h_idx in range(num_partitions):
-                h_patches = []
-                for w_idx in range(num_partitions):
-                    patch = x_patches_reconstructed[:, idx, :, :, :]  # 形状：(B, d_model, h, w)
-                    h_patches.append(patch)
-                    idx += 1
-                h_concat = torch.cat(h_patches, dim=3)  # 在 W 维度拼接
-                c_patches.append(h_concat)
-            c_concat = torch.cat(c_patches, dim=2)  # 在 H 维度拼接
-            x_reconstructed_C_splits.append(c_concat)
-        x_reconstructed = torch.cat(x_reconstructed_C_splits, dim=1)  # 在 C 维度拼接
-
-        x_out = x_reconstructed  # 形状：(B, C, H, W)
-
-        return x_out
-
-    def forward_channel_token(self, x, r= False):
-        B, n_tokens = x.shape[:2]
-        d_model = x.shape[2:].numel()
-        
-        assert d_model == self.dim, f"d_model: {d_model}, self.dim: {self.dim}"
-        img_dims = x.shape[2:]
-        x_flat = x.flatten(2)
-        assert x_flat.shape[2] == d_model, f"x_flat.shape[2]: {x_flat.shape[2]}, d_model: {d_model}"
-        x_norm = self.norm(x_flat)
-        x_mamba = self.mamba(x_norm)
-        out = x_mamba.reshape(B, n_tokens, *img_dims)
- 
-        return out
-
-    def forward(self, x, hilbert_curve1=None, r=False):
-        if x.dtype == torch.float16 or x.dtype == torch.bfloat16:
-            x = x.type(torch.float32)
-        
-        if self.channel_token:
-            out = self.forward_channel_token(x, r=r)
-        else:
-            out = self.forward_patch_token(x, hilbert_curve1, r=r)
-
-        return out
-
-def SoftShrink_GPU(S, tau):
-    # S: [num_patches, k], dtype: torch.float32
-    return torch.sign(S) * torch.clamp(torch.abs(S) - tau, min=0.0)
-
-def SVDShrink_Fast_GPU(X, tau=0.1, patch_size=8):
-    # X: [N, C, H, W]
-    N, C, H, W = X.shape
-    assert H % patch_size == 0 and W % patch_size == 0, "H 和 W 必须能被 patch_size 整除"
-    
-    # 对输入进行二维 FFT
-    D = torch.fft.fft2(X, dim=(-2, -1))
-    D = D.to(torch.complex64)
-    
-    # 将图像划分为小块，并重塑为批量形式
-    D_patches = D.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
-    D_patches = D_patches.contiguous().view(N * C * (H // patch_size) * (W // patch_size), patch_size, patch_size)
-    # 现在 D_patches 的形状是 [num_patches, patch_size, patch_size]
-    
-    # 对所有小块批量执行 SVD
-    U, S, Vh = torch.linalg.svd(D_patches, full_matrices=False)
-    # U: [num_patches, patch_size, patch_size]
-    # S: [num_patches, patch_size]
-    # Vh: [num_patches, patch_size, patch_size]
-    
-    # 对奇异值进行软阈值收缩
-    S_shrink = SoftShrink_GPU(S, tau)
-    
-    # 将收缩后的奇异值转换为对角矩阵
-    S_shrink_diag = torch.diag_embed(S_shrink).to(U.dtype)
-    # S_shrink_diag: [num_patches, patch_size, patch_size]
-    
-    # 重构小块
-    D_reconstructed_patches = torch.matmul(U, torch.matmul(S_shrink_diag, Vh))
-    # D_reconstructed_patches: [num_patches, patch_size, patch_size]
-    
-    # 将重构的小块还原为原始形状
-    D_reconstructed = D_reconstructed_patches.view(N, C, H // patch_size, W // patch_size, patch_size, patch_size)
-    D_reconstructed = D_reconstructed.permute(0, 1, 2, 4, 3, 5).contiguous()
-    D_reconstructed = D_reconstructed.view(N, C, H, W)
-    
-    # 执行二维逆 FFT，恢复时域数据
-    X_reconstructed = torch.fft.ifft2(D_reconstructed, dim=(-2, -1)).real
-    return X_reconstructed
-
 
 from mmcv.cnn import build_norm_layer
 
@@ -1767,7 +1584,6 @@ class MambaLayer_3dlocalchunk(nn.Module):
 
         return out
 
-
 class MambaLayer_3dlocalcube(nn.Module):
     def __init__(self, dim, dim_m, d_state=16, d_conv=4, expand=2, channel_token=False, mode_temp=3, num_tokens=1, local_numbers=8, channel_numbers=7, column_first=False, upscale_factor=2, use_fast_path=True):
         super().__init__()
@@ -2027,11 +1843,7 @@ class MambaLayer_cube(nn.Module):
 
         return out
 
-
 class LocalNonLocalBlock(nn.Module):
-    """
-    The Local and Non-Local Transformer Block (LNLB) is the most important component. Each LNLB consists of three layer-normalizations (LNs), a Local MSA, a Non-Local MSA, and a GDFN (Zamir et al. 2022).
-    """
     def __init__(self, 
                  cfg,
                  dim, 
@@ -2047,43 +1859,24 @@ class LocalNonLocalBlock(nn.Module):
         self.window_size = window_size
         self.window_num = window_num
         self.dim = dim
-#    def __init__(self, dim, num_heads=2, num_tokens=1, window_size=8, qkv_bias=False, drop=0., attn_drop=0.)
         
         self.blocks = nn.ModuleList([])
         for _ in range(num_blocks):
             self.blocks.append(nn.ModuleList([
-                # PreNorm(dim, nn.Conv2d(dim, dim, kernel_size=1, bias=False),
-                #     layernorm_type = layernorm_type),
-
-                # PreNorm(dim, MambaLayer_3dlocalcube( #_3dlocalchunk( # MambaLayer_3dlocalchunk( #MambaLayer_hilbert(
-                #         dim = dim, 
-                #         dim_m = dim_m,
-                #         d_state = 16,
-                #         local_numbers=16, 
-                #         channel_numbers=1,
-                #         upscale_factor=1,
-                #         d_conv=4,
-                #         expand = 2, 
-                #         channel_token = False,
-                #         mode_temp=3,
-                #         use_fast_path=False),
-                #     layernorm_type = layernorm_type),
-
-                # SCMAMBA_5stg_simu_fyc_1107_3dlocal_one3_248_1_up1
-                PreNorm(dim, MambaLayer_3dlocal( #MambaLayer_hilbert(
+                PreNorm(dim, MambaLayer_3dlocal(
                         dim = dim, 
                         dim_m = dim_m,
                         d_state = 16,
-                        local_numbers=dim_m//8, 
+                        local_numbers=dim_m//32, 
                         channel_numbers=2,
                         upscale_factor=1,
                         d_conv=4,
                         expand = 2, 
                         channel_token = False,
-                        mode_temp=2), # , column_first=True
+                        mode_temp=2),
                     layernorm_type = layernorm_type),
 
-                PreNorm(dim, MambaLayer_global( #MambaLayer_hilbert(
+                PreNorm(dim, MambaLayer_global( 
                         dim = dim, 
                         dim_m = dim_m,
                         d_state = 16,
@@ -2105,16 +1898,11 @@ class LocalNonLocalBlock(nn.Module):
 
 
     def forward(self, x, hilbert_curve1=None):
-        # for (Attention, MambaLayer, ffn) in self.blocks:
 
-        # x = x + SVDShrink_Fast_GPU(x)
-
-        for (DynamicLocal, MambaLayer, ffn) in self.blocks: # DynamicLocal, MambaLayer,   DynamicLocal1, DynamicLocal2, DynamicLocal3, 
-            # x = x + Attention(x) 
+        for (DynamicLocal, MambaLayer, ffn) in self.blocks: 
             B, C, H, W = x.shape
-            # x = x + conv(x)
             x = x + DynamicLocal(x)
-            x = x + MambaLayer(x) # , hilbert_curve1
+            x = x + MambaLayer(x) 
             x = x + ffn(x)
 
         return x
@@ -2144,9 +1932,6 @@ class UpSample(nn.Module):
     
     
 class LNLT(nn.Module):
-    """
-    The Local and Non-Local Transformer (LNLT) adopts a three-level U-shaped structure, and each level consists of multiple basic units called Local and Non-Local Transformer Blocks (LNLBs). Up- and down-sampling modules are positioned between LNLBs.
-    """
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
@@ -2240,66 +2025,6 @@ class LNLT(nn.Module):
 
         self.mapping = nn.Conv2d(cfg.MODEL.DENOISER.SCMAMBA.DIM, cfg.MODEL.DENOISER.SCMAMBA.OUT_DIM, kernel_size=3, stride=1, padding=1, bias=False)
 
-    # def hilbert_curve_256_scale(self, ):
-
-    #     # B, nf, C, H, W = x.shape
-
-    #     nf = 7 #28
-    #     H = 64
-    #     W = 64
-
-    #     hilbert_curve = list(
-    #         Hilbert3d(width=H, height=W, depth=nf))  
-    #     hilbert_curve = torch.tensor(hilbert_curve).long()
-    #     hilbert_curve = hilbert_curve[:, 0] * W * nf + hilbert_curve[:, 1] * nf + hilbert_curve[:, 2]
-
-    #     return {
-    #         'hilbert_curve_256_scale': hilbert_curve
-    #     }
-    
-    # def hilbert_curve_128_scale(self, ):
-
-    #     # B, nf, C, H, W = x.shape
-
-    #     nf = 14
-    #     H = 32
-    #     W = 32
-
-    #     hilbert_curve = list(
-    #         Hilbert3d(width=H, height=W, depth=nf))  
-    #     hilbert_curve = torch.tensor(hilbert_curve).long()
-    #     hilbert_curve = hilbert_curve[:, 0] * W * nf + hilbert_curve[:, 1] * nf + hilbert_curve[:, 2]
-
-    #     return {
-    #         'hilbert_curve_128_scale': hilbert_curve
-    #     }
-    
-    # def hilbert_curve_64_scale(self, ):
-
-    #     # B, nf, C, H, W = x.shape
-
-    #     nf = 28
-    #     H = 16
-    #     W = 16
-
-    #     hilbert_curve = list(
-    #         Hilbert3d(width=H, height=W, depth=nf))  
-    #     hilbert_curve = torch.tensor(hilbert_curve).long()
-    #     hilbert_curve = hilbert_curve[:, 0] * W * nf + hilbert_curve[:, 1] * nf + hilbert_curve[:, 2]
-
-    #     return {
-    #         'hilbert_curve_64_scale': hilbert_curve
-    #     }
-    
-    # def save_hilbert_curve_256_scale(self, hilbert_curve_256_scale, filename='./Hilbert1009/hilbert_curve_256_scale.pt'):
-    #     torch.save(hilbert_curve_256_scale, filename)
-        
-    # def save_hilbert_curve_128_scale(self, hilbert_curve_128_scale, filename='./Hilbert1009/hilbert_curve_128_scale.pt'):
-    #     torch.save(hilbert_curve_128_scale, filename)
-       
-    # def save_hilbert_curve_64_scale(self, hilbert_curve_64_scale, filename='./Hilbert1009/hilbert_curve_64_scale.pt'):
-    #     torch.save(hilbert_curve_64_scale, filename)
-
     def forward(self, x):
         b, c, h_inp, w_inp = x.shape
         hb, wb = 16, 16
@@ -2307,58 +2032,23 @@ class LNLT(nn.Module):
         pad_w = (wb - w_inp % wb) % wb
         x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
 
-        
-        # result64 = self.hilbert_curve_256_scale()
-        # hilbert_curve64 = result64['hilbert_curve_256_scale'].to(x.device)
-        # self.save_hilbert_curve_256_scale(hilbert_curve64)
-        
-        # result64 = self.hilbert_curve_128_scale()
-        # hilbert_curve64 = result64['hilbert_curve_128_scale'].to(x.device)
-        # self.save_hilbert_curve_128_scale(hilbert_curve64)
-
-        # result64 = self.hilbert_curve_64_scale()
-        # hilbert_curve64 = result64['hilbert_curve_64_scale'].to(x.device)
-        # self.save_hilbert_curve_64_scale(hilbert_curve64)
-
-        # hilbert_curve_256_1 = torch.load('./Hilbert1009/hilbert_curve_256_scale.pt', map_location=x.device)
-        # hilbert_curve_128_1 = torch.load('./Hilbert1009/hilbert_curve_128_scale.pt', map_location=x.device)
-        # hilbert_curve_64_1 = torch.load('./Hilbert1009/hilbert_curve_64_scale.pt', map_location=x.device)
-
-        
-        # result64 = self.hilbert_curve_256_2_scale()
-        # hilbert_curve64 = result64['hilbert_curve_256_2_scale'].to(x.device)
-        # self.save_hilbert_curve_256_2_scale(hilbert_curve64)
-        
-        # result64 = self.hilbert_curve_128_2_scale()
-        # hilbert_curve64 = result64['hilbert_curve_128_2_scale'].to(x.device)
-        # self.save_hilbert_curve_128_2_scale(hilbert_curve64)
-
-        # result64 = self.hilbert_curve_64_2_scale()
-        # hilbert_curve64 = result64['hilbert_curve_64_2_scale'].to(x.device)
-        # self.save_hilbert_curve_64_2_scale(hilbert_curve64)
-
-        # hilbert_curve_256_2 = torch.load('./Hilbert4/hilbert_curve_256_2_scale.pt', map_location=x.device)
-        # hilbert_curve_128_2 = torch.load('./Hilbert4/hilbert_curve_128_2_scale.pt', map_location=x.device)
-        # hilbert_curve_64_2 = torch.load('./Hilbert4/hilbert_curve_64_2_scale.pt', map_location=x.device)
-
         x1 = self.embedding(x)
-        res1 = self.Encoder[0](x1) # , hilbert_curve_256_1)
-
+        res1 = self.Encoder[0](x1) 
         x2 = self.Downs[0](x1)
-        res2 = self.Encoder[1](x2) #, hilbert_curve_128_1)
+        res2 = self.Encoder[1](x2)
 
         x4 = self.Downs[1](res2)
-        res4 = self.BottleNeck(x4) #, hilbert_curve_64_1)
+        res4 = self.BottleNeck(x4) 
 
-        dec_res2 = self.Ups[0](res4) # dim * 2 ** 2 -> dim * 2 ** 1
-        dec_res2 = torch.cat([dec_res2, res2], dim=1) # dim * 2 ** 2
-        dec_res2 = self.fusions[0](dec_res2) # dim * 2 ** 2 -> dim * 2 ** 1
-        dec_res2 = self.Decoder[0](dec_res2) #, hilbert_curve_128_1)
+        dec_res2 = self.Ups[0](res4) 
+        dec_res2 = torch.cat([dec_res2, res2], dim=1) 
+        dec_res2 = self.fusions[0](dec_res2) 
+        dec_res2 = self.Decoder[0](dec_res2) 
 
-        dec_res1 = self.Ups[1](dec_res2) # dim * 2 ** 1 -> dim * 2 ** 0
-        dec_res1 = torch.cat([dec_res1, res1], dim=1) # dim * 2 ** 1 
-        dec_res1 = self.fusions[1](dec_res1) # dim * 2 ** 1 -> dim * 2 ** 0        
-        dec_res1 = self.Decoder[1](dec_res1) #, hilbert_curve_256_1)
+        dec_res1 = self.Ups[1](dec_res2) 
+        dec_res1 = torch.cat([dec_res1, res1], dim=1) 
+        dec_res1 = self.fusions[1](dec_res1) 
+        dec_res1 = self.Decoder[1](dec_res1) 
 
         if self.cfg.MODEL.DENOISER.SCMAMBA.WITH_NOISE_LEVEL:
             out = self.mapping(dec_res1) + x[:, 1:, :, :]
@@ -2388,7 +2078,6 @@ def At(y, Phi):
     x = temp * Phi
     return x
 
-
 def shift_3d(inputs, step=2):
     [B, C, H, W] = inputs.shape
     temp = torch.zeros((B, C, H, W+(C-1)*step)).to(inputs.device)
@@ -2402,7 +2091,6 @@ def shift_back_3d(inputs,step=2):
     for i in range(nC):
         inputs[:,i,:,:] = torch.roll(inputs[:,i,:,:], shifts=(-1)*step*i, dims=2)
     return inputs
-
 
 class DegradationEstimation(nn.Module):
     """
@@ -2441,251 +2129,6 @@ class DegradationEstimation(nn.Module):
         noise_level = x[:, 1, :, :]
 
         return phi, mu, noise_level[:, None, :, :]
-
-
-class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
-
-class l_nl_attn(nn.Module):
-    def __init__(self, dim, num_heads=2, num_tokens=1, window_size=8, norm_layer=nn.LayerNorm, qkv_bias=False, drop=0., mlp_ratio=4.,attn_drop=0.,drop_path=0.,):
-        super(l_nl_attn, self).__init__()
-
-        self.attn = Attention(dim, num_heads=num_heads, num_tokens=num_tokens, window_size=window_size, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        self.global_token = nn.Parameter(torch.zeros(1, num_tokens, dim))
-        self.dim= dim
-        self.cpe1 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim)
-        self.norm1 = norm_layer(dim)
-        self.in_proj = nn.Linear(dim, dim)
-        self.act_proj = nn.Linear(dim, dim)
-        self.dwc = nn.Conv2d(dim, dim, 3, padding=1, groups=dim)
-        self.act = nn.SiLU()
-        self.out_proj = nn.Linear(dim, dim)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-        self.cpe2 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim)
-        self.norm2 = norm_layer(dim)
-        # self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=nn.GELU, drop=drop)
-
-   
-    def forward(self, x):
-        
-        B, C, H, W = x.shape
-        
-        x = x.flatten(2).transpose(1, 2)
-        global_token = self.global_token.expand(x.shape[0], -1, -1)
-        
-        
-
-        x = self.norm1(x)
-        act_res = self.act(self.act_proj(x))
-        
-        x = self.in_proj(x).view(B, H, W, C)
-        x = self.act(self.dwc(x.permute(0, 3, 1, 2))).permute(0, 2, 3, 1).view(B, H*W, C)
-
-        x_att = torch.cat((global_token, x), dim=1)
-        x = self.attn(x_att,H, W)
-
-
-        x = x[:, -H*W:]
-        out = x.view(-1, H, W, self.dim).permute(0, 3, 1, 2).contiguous()      
-
-        x = self.out_proj(x * act_res)
-        return out
-
-
-class Attention(nn.Module):
-    def __init__(self, dim, num_tokens=1, num_heads=2, window_size=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
-        super().__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.num_tokens = num_tokens
-        self.window_size = window_size
-        self.attn_area = window_size * window_size
-        self.scale = qk_scale or head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.kv_global = nn.Linear(dim, dim * 2, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop) if attn_drop > 0 else nn.Identity()
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop) if proj_drop > 0 else nn.Identity()
-
-        # positional embedding
-        # Define a parameter table of relative position bias, shape: 2*Wh-1 * 2*Ww-1, nH
-        self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * window_size - 1) * (2 * window_size - 1), num_heads))
-
-        # Get pair-wise relative position index for each token inside the window
-        self.register_buffer("relative_position_index", get_relative_position_index(window_size,
-                                                                                    window_size).view(-1))
-        # Init relative positional bias
-        trunc_normal_(self.relative_position_bias_table, std=.02)
-
-    def _get_relative_positional_bias(
-            self
-    ) -> torch.Tensor:
-        """ Returns the relative positional bias.
-        Returns:
-            relative_position_bias (torch.Tensor): Relative positional bias.
-        """
-        relative_position_bias = self.relative_position_bias_table[
-            self.relative_position_index].view(self.attn_area, self.attn_area, -1)
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
-        return relative_position_bias.unsqueeze(0)
-
-    def forward_global_aggregation(self, q, k, v):
-        """
-        q: global tokens
-        k: image tokens
-        v: image tokens
-        """
-        B, _, N, _ = q.shape
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, -1)
-        return x
-
-    def forward_local(self, q, k, v, H, W):
-        """
-        q: image tokens
-        k: image tokens
-        v: image tokens
-        """
-        B, num_heads, N, C = q.shape
-        ws = self.window_size
-        h_group, w_group = H // ws, W // ws
-
-        # partition to windows
-        q = q.view(B, num_heads, h_group, ws, w_group, ws, -1).permute(0, 2, 4, 1, 3, 5, 6).contiguous()
-        q = q.view(-1, num_heads, ws*ws, C)
-        k = k.view(B, num_heads, h_group, ws, w_group, ws, -1).permute(0, 2, 4, 1, 3, 5, 6).contiguous()
-        k = k.view(-1, num_heads, ws*ws, C)
-        v = v.view(B, num_heads, h_group, ws, w_group, ws, -1).permute(0, 2, 4, 1, 3, 5, 6).contiguous()
-        v = v.view(-1, num_heads, ws*ws, v.shape[-1])
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        pos_bias = self._get_relative_positional_bias()
-        attn = (attn + pos_bias).softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(v.shape[0], ws*ws, -1)
-
-        # reverse
-        x = window_reverse(x, (H, W), (ws, ws))
-        return x
-
-    def forward_global_broadcast(self, q, k, v):
-        """
-        q: image tokens
-        k: global tokens
-        v: global tokens
-        """
-        B, num_heads, N, _ = q.shape
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, -1)
-        return x
-
-    def forward(self, x, H, W):
-        B, N, C = x.shape# 4,65537,28
-        NC = self.num_tokens#1
-        # pad
-        x_img, x_global = x[:, NC:], x[:, :NC]
-        x_img = x_img.view(B, H, W, C)
-        pad_l = pad_t = 0
-        ws = self.window_size
-        pad_r = (ws - W % ws) % ws
-        pad_b = (ws - H % ws) % ws
-        x_img = F.pad(x_img, (0, 0, pad_l, pad_r, pad_t, pad_b))
-        Hp, Wp = x_img.shape[1], x_img.shape[2]
-        x_img = x_img.view(B, -1, C)
-        x = torch.cat([x_global, x_img], dim=1)
-
-        # qkv
-        qkv = self.qkv(x)
-        q, k, v = qkv.view(B, -1, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4).unbind(0)
-
-        # split img tokens & global tokens
-        q_img, k_img, v_img = q[:, :, NC:], k[:, :, NC:], v[:, :, NC:]
-        q_cls, _, _ = q[:, :, :NC], k[:, :, :NC], v[:, :, :NC]
-
-        # local window attention
-        x_img = self.forward_local(q_img, k_img, v_img, Hp, Wp)
-        # restore to the original size
-        x_img = x_img.view(B, Hp, Wp, -1)[:, :H, :W].reshape(B, H*W, -1)
-        q_img = q_img.reshape(B, self.num_heads, Hp, Wp, -1)[:, :, :H, :W].reshape(B, self.num_heads, H*W, -1)
-        k_img = k_img.reshape(B, self.num_heads, Hp, Wp, -1)[:, :, :H, :W].reshape(B, self.num_heads, H*W, -1)
-        v_img = v_img.reshape(B, self.num_heads, Hp, Wp, -1)[:, :, :H, :W].reshape(B, self.num_heads, H*W, -1)
-
-        # global aggregation
-        x_cls = self.forward_global_aggregation(q_cls, k_img, v_img)
-        k_cls, v_cls = self.kv_global(x_cls).view(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4).unbind(0)
-
-        # gloal broadcast
-        x_img = x_img + self.forward_global_broadcast(q_img, k_cls, v_cls)
-
-        x = torch.cat([x_cls, x_img], dim=1)
-        x = self.proj(x)
-        return x
-
-
-def get_relative_position_index(
-        win_h: int,
-        win_w: int
-) -> torch.Tensor:
-    """ Function to generate pair-wise relative position index for each token inside the window.
-        Taken from Timms Swin V1 implementation.
-    Args:
-        win_h (int): Window/Grid height.
-        win_w (int): Window/Grid width.
-    Returns:
-        relative_coords (torch.Tensor): Pair-wise relative position indexes [height * width, height * width].
-    """
-    coords = torch.stack(torch.meshgrid([torch.arange(win_h), torch.arange(win_w)]))
-    coords_flatten = torch.flatten(coords, 1)
-    relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
-    relative_coords = relative_coords.permute(1, 2, 0).contiguous()
-    relative_coords[:, :, 0] += win_h - 1
-    relative_coords[:, :, 1] += win_w - 1
-    relative_coords[:, :, 0] *= 2 * win_w - 1
-    return relative_coords.sum(-1)
-
-def window_reverse(
-        windows: torch.Tensor,
-        original_size,
-        window_size=(7, 7)
-) -> torch.Tensor:
-    """ Reverses the window partition.
-    Args:
-        windows (torch.Tensor): Window tensor of the shape [B * windows, window_size[0] * window_size[1], C].
-        original_size (Tuple[int, int]): Original shape.
-        window_size (Tuple[int, int], optional): Window size which have been applied. Default (7, 7)
-    Returns:
-        output (torch.Tensor): Folded output tensor of the shape [B, original_size[0] * original_size[1], C].
-    """
-    # Get height and width
-    H, W = original_size
-    # Compute original batch size
-    B = int(windows.shape[0] / (H * W / window_size[0] / window_size[1]))
-    # Fold grid tensor
-    output = windows.view(B, H // window_size[0], W // window_size[1], window_size[0], window_size[1], -1)
-    output = output.permute(0, 1, 3, 2, 4, 5).reshape(B, H * W, -1)
-    return output
 
 class SCMamba(nn.Module):
     def __init__(self, cfg):
