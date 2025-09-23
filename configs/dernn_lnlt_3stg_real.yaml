@@ -1,0 +1,51 @@
+DATASETS:
+  STEP: 2
+  WAVE_LENS: 28
+  MASK_TYPE: "mask_3d_shift"
+  
+  TRAIN:
+    ITERATION: 10000
+    CROP_SIZE: [660, 660]
+    WITH_NOISE: True
+    PATHS:
+      - "./datasets/CSI/cave_1024_28"
+      - "./datasets/CSI/KAIST_CVPR2021"
+    MASK_PATH: "./datasets/CSI/TSA_real_data/mask_3d_shift.mat"
+    RANDOM_MASK: False
+  VAL:
+    PATH: "./datasets/CSI/TSA_simu_data/Truth/"
+    MASK_PATH: "./datasets/CSI/TSA_real_data/mask_3d_shift.mat"
+  TEST:
+    PATH: "./datasets/CSI/TSA_real_data/Measurements/"
+    MASK_PATH: "./datasets/CSI/TSA_real_data/mask_3d_shift.mat"
+
+  
+DATALOADER:
+  BATCH_SIZE: 2
+  NUM_WORKERS: 8
+
+MODEL:
+  DENOISER:
+    TYPE: "SCMAMBA_real"
+    DERNN_LNLT:
+      IN_DIM: 29
+      DIM: 28
+      OUT_DIM: 28
+      WINDOW_SIZE: [14, 14]
+      WINDOW_NUM: [14, 14]
+      LOCAL: True
+      NON_LOCAL: True
+      NUM_BLOCKS: [1, 1, 1, 1, 1]
+      LAYERNORM_TYPE: "WithBias"
+      FFN_NAME: "Gated_Dconv_FeedForward"
+      STAGE: 3
+      SHARE_PARAMS: True
+
+
+OPTIMIZER:
+  LR: 1e-3
+
+
+DEBUG: True
+OUTPUT_DIR: "./exp/SCMAMBA_3stg_real/"
+PRETRAINED_CKPT_PATH: "./checkpoints/3stg_acc_real.pth"
