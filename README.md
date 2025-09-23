@@ -60,6 +60,27 @@ Download cave_1024_28 ([Baidu Disk](https://pan.baidu.com/s/1X_uXxgyO-mslnCTn4io
 
 We use the CAVE dataset (cave_1024_28) as the simulation training set. Both the CAVE (cave_1024_28) and KAIST (KAIST_CVPR2021) datasets are used as the real training set.
 
+## Mamba Environment
+
+```
+conda create -n your_env_name python=3.10.13
+conda activate your_env_name
+conda install cudatoolkit==11.8 -c nvidia
+pip install torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 --index-url https://download.pytorch.org/whl/cu118
+conda install -c "nvidia/label/cuda-11.8.0" cuda-nvcc
+conda install packaging
+git clone https://github.com/Dao-AILab/causal-conv1d.git 
+cd causal-conv1d 
+git checkout v1.2.0 # current latest version tag 
+CAUSAL_CONV1D_FORCE_BUILD=TRUE pip install .
+cd ..
+git clone https://github.com/state-spaces/mamba.git
+cd ./mamba
+git checkout v1.2.0 # current latest version tag
+MAMBA_FORCE_BUILD=TRUE pip install .
+```
+
+
 ## Simulation Experiement:
 
 ### Training
