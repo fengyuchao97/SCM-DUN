@@ -100,8 +100,6 @@ bash ./scripts/train_SCMAMBA_7stg_simu.sh
 # DERNN-LNLT 9stage
 bash ./scripts/train_SCMAMBA_9stg_simu.sh
 
-# DERNN-LNLT 9stage*
-bash ./scripts/train_SCMAMBA_9stg_star_simu.sh
 ```
 
 The training log, trained model, and reconstrcuted HSI will be available in `SCM-DUN/exp/` .
@@ -124,8 +122,6 @@ bash ./scripts/test_SCMAMBA_7stg_simu.sh
 # SCMAMBA 9stage
 bash ./scripts/test_SCMAMBA_9stg_simu.sh
 
-# SCMAMBA 9stage*
-bash ./scripts/test_SCMAMBA_9stg_star_simu.sh
 ```
 
 The reconstrcuted HSIs will be output into `SCM-DUN/results/`
