@@ -91,9 +91,6 @@ cd SCM-DUN/
 # DERNN-LNLT 5stage
 bash ./scripts/train_SCMAMBA_5stg_simu.sh
 
-bash ./scripts/train_SCMAMBA_5stg_simu_acc_att.sh
-
-
 # DERNN-LNLT 7stage
 bash ./scripts/train_SCMAMBA_7stg_simu.sh
 
