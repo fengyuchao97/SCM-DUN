@@ -88,8 +88,10 @@ MAMBA_FORCE_BUILD=TRUE pip install .
 ```
 cd SCM-DUN/
 
-# DERNN-LNLT 5stage
-bash ./scripts/train_SCMAMBA_5stg_simu.sh
+# DERNN-LNLT 3stage
+bash ./scripts/train_SCMAMBA_3stg_simu.sh
+
+...
 
 # DERNN-LNLT 7stage
 bash ./scripts/train_SCMAMBA_7stg_simu.sh
@@ -110,8 +112,10 @@ Run the following command to test the model on the simulation dataset.
 ```
 cd SCM-DUN/
 
-# SCMAMBA 5stage
-bash ./scripts/test_SCMAMBA_5stg_simu.sh
+# SCMAMBA 3stage
+bash ./scripts/test_SCMAMBA_3stg_simu.sh
+
+...
 
 # SCMAMBA 7stage
 bash ./scripts/test_SCMAMBA_7stg_simu.sh
@@ -148,8 +152,8 @@ Run show_simulation.m
 ```
 cd SCM-DUN/
 
-# DERNN-LNLT 5stage
-bash ./scripts/train_SCMAMBA_5stg_real.sh
+# DERNN-LNLT 3stage
+bash ./scripts/train_SCMAMBA_3stg_real.sh
 ```
 
 The training log and trained model will be available in `SCM-DUN/exp/`
@@ -159,8 +163,8 @@ The training log and trained model will be available in `SCM-DUN/exp/`
 ```
 cd SCM-DUN/
 
-# DERNN-LNLT 5stage
-bash ./scripts/test_SCMAMBA_5stg_real.sh
+# DERNN-LNLT 3stage
+bash ./scripts/test_SCMAMBA_3stg_real.sh
 ```
 
 The reconstrcuted HSI will be output into `SCM-DUN/results/`
