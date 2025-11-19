@@ -1,6 +1,6 @@
 # SCMamba for CASSI
 
-This repo is the implementation of paper "2D-Slice and 3D-Cube Mamba Network for Snapshot Spectral Compressive Imaging"
+This repo is the implementation of paper "2D-Slice and 3D-Cube Mamba Network for Snapshot Spectral Compressive Imaging (TCSVT)"
 
 # Abstract
 
@@ -184,8 +184,23 @@ Our code is based on following codes, thanks for their generous open source:
 
 ## Citation
 
-If this code helps you, please consider citing our works:
+If you use our method in your work please cite our paper:
+* BibTex：
 
-```shell
 
-```
+    @ARTICLE{11230624,
+      author={Feng, Yuchao and Qin, Mengjie and Wu, Zongliang and Yang, Yuxiang and Gao, Junhua and Yuan, Xin},
+      journal={IEEE Transactions on Circuits and Systems for Video Technology}, 
+      title={2D-Slice and 3D-Cube Mamba Network for Snapshot Spectral Compressive Imaging}, 
+      year={2025},
+      volume={},
+      number={},
+      pages={1-1},
+      doi={10.1109/TCSVT.2025.3629725}
+    }
+
+
+
+* Plane Text：
+	
+    Y. Feng, M. Qin, Z. Wu, Y. Yang, J. Gao and X. Yuan, "2D-Slice and 3D-Cube Mamba Network for Snapshot Spectral Compressive Imaging," in IEEE Transactions on Circuits and Systems for Video Technology, doi: 10.1109/TCSVT.2025.3629725.
